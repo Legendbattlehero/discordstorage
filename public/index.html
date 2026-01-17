@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Wesams Storage Vault</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #313338; color: #dcdee1; display: flex; flex-direction: column; align-items: center; padding: 40px; }
+        .card { background: #2b2d31; border-radius: 12px; padding: 30px; width: 550px; text-align: center; border: 1px solid #444; }
+        .progress-container { display: none; margin-top: 25px; background: #1e1f22; padding: 20px; border-radius: 10px; border: 1px solid #5865f2; }
+        progress { width: 100%; height: 12px; accent-color: #5865f2; margin-bottom: 15px; }
+        .file-row { background: #232428; padding: 15px; margin-top: 10px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; border-left: 5px solid #5865f2; }
+        .btn { background: #5865f2; color: white; border: none; padding: 10px 15px; border-radius: 6px; cursor: pointer; text-decoration: none; font-weight: bold; }
+        .btn-del { background: #ed4245; margin-left: 10px; }
+        #sliceCounter { font-size: 1.6em; color: #ffffff; font-weight: bold; margin: 10px 0; }
+        #etaText { color: #faa61a; font-weight: bold; font-size: 1em; }
+        #mbText { font-size: 0.9em; color: #888; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h1 style="color:white; margin-bottom:20px;">Wesams Storage Vault</h1>
+    <input type="file" id="fileInput" style="margin-bottom: 20px; width: 100%;">
+    <button class="btn" onclick="startUpload()" style="width: 100%;">Upload to Vault</button>
+
+    <div class="progress-container" id="progBox">
+        <progress id="progressBar" value="0" max="100"></progress>
+        <div id="mbText">Ready...</div>
+        <div id="sliceCounter"></div>
+        <div id="etaText"></div>
+    </div>
+</div>
+
+<div id="fileList" style="width: 550px; margin-top: 30px;"></div>
+
+<script>
+    window.onload = loadLibrary;
+    let pollInterval;
+
+    async function loadLibrary() {
+        const res = await fetch('/files');
+        const files = await res.json();
+        const listDiv = document.getElementById('fileList');
+        listDiv.innerHTML = files.reverse().map(file => `
+            <div class="file-row">
+                <div style="text-align: left;">
+                    <strong>${file.name}</strong><br>
+                    <small>${(file.size/1024/1024).toFixed(2)} MB • ${file.date}</small>
+                </div>
+                <div>
+                    <a href="/download/${file.id}" class="btn">Download</a>
+                    <button class="btn btn-del" onclick="deleteFile('${file.id}')">Delete</button>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function startUpload() {
+        const file = document.getElementById('fileInput').files[0];
+        if (!file) return;
+
+        const progBox = document.getElementById('progBox');
+        const bar = document.getElementById('progressBar');
+        const mbText = document.getElementById('mbText');
+        const sliceDisplay = document.getElementById('sliceCounter');
+        const etaDisplay = document.getElementById('etaText');
+
+        progBox.style.display = 'block';
+        sliceDisplay.innerText = "Calculating Slices..."; 
+        etaDisplay.innerText = "";
+        
+        const totalMB = (file.size / (1024 * 1024)).toFixed(2);
+        const xhr = new XMLHttpRequest();
+        const fd = new FormData();
+        fd.append('file', file);
+
+        // STAGE 1: Browser to Server
+        xhr.upload.onprogress = (e) => {
+            const currentMB = (e.loaded / (1024 * 1024)).toFixed(2);
+            const percent = Math.round((e.loaded / e.total) * 100);
+            bar.value = percent;
+            mbText.innerText = `${currentMB} MB / ${totalMB} MB (${percent}%)`;
+            
+            if (percent === 100) {
+                mbText.innerText = "Server received file. Creating slices...";
+                startPolling(); // Trigger the X/Y counter
+            }
+        };
+
+        xhr.onload = () => {
+            clearInterval(pollInterval);
+            sliceDisplay.innerText = "✅ All Slices Created!";
+            etaDisplay.innerText = "";
+            setTimeout(() => { 
+                progBox.style.display = 'none'; 
+                loadLibrary(); 
+            }, 3000);
+        };
+
+        xhr.open('POST', '/upload');
+        xhr.send(fd);
+    }
+
+    function startPolling() {
+        const sliceDisplay = document.getElementById('sliceCounter');
+        const etaDisplay = document.getElementById('etaText');
+
+        pollInterval = setInterval(async () => {
+            const res = await fetch('/upload-status');
+            const status = await res.json();
+
+            if (status.active) {
+                // THE LIVE X/Y COUNTER
+                sliceDisplay.innerText = `${status.current}/${status.total} slices created`;
+
+                // ETA CALCULATION
+                if (status.current > 0) {
+                    const elapsed = (Date.now() - status.startTime) / 1000;
+                    const timePerSlice = elapsed / status.current;
+                    const remaining = status.total - status.current;
+                    const secondsLeft = Math.round(remaining * timePerSlice);
+                    etaDisplay.innerText = `Approximate time: ${secondsLeft} seconds left`;
+                } else {
+                    // Show 0/Total immediately even if none are finished yet
+                    sliceDisplay.innerText = `0/${status.total} slices created`;
+                    etaDisplay.innerText = "Starting first slice...";
+                }
+            }
+        }, 400); // Polling faster (400ms) for smoother updates
+    }
+
+    async function deleteFile(id) {
+        if (!confirm("Delete permanently?")) return;
+        await fetch(`/files/${id}`, { method: 'DELETE' });
+        loadLibrary();
+    }
+</script>
+</body>
+</html>
